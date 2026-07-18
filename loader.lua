@@ -1,6 +1,3 @@
-if getgenv and getgenv().NH_LOADER_RUNNING then return end
-if getgenv then getgenv().NH_LOADER_RUNNING = true end
-
 local function main()
 	local BASE      = "https://nighthub-keys.nighthubv1.workers.dev"
 	local KEY_FILE  = "nighthub_key.txt"
@@ -128,18 +125,22 @@ local function main()
 	end
 
 	--========================== SILENT AUTO-LOGIN ==========================--
+	-- OBFUSCATION-SAFE: no mid-function `return`. If the saved key launches the hub we
+	-- just set a flag; the key-gate UI below is then SKIPPED with `if not hubLaunched`.
+	-- (A `return` nested inside do/if blocks can be mishandled by control-flow-flattening
+	-- obfuscators, which showed the key gate ON TOP of an already-loaded hub.)
+	local hubLaunched = false
 	do
 		local saved = readSavedKey()
 		if saved then
 			local ok = validate(saved)
-			if ok then
-				local didLaunch = launchHub(saved)
-				if didLaunch then return end   -- returns from main(), not the chunk
-			end
+			if ok and launchHub(saved) then hubLaunched = true end
 		end
 	end
 
 	--========================== KEY GATE UI ==========================--
+	-- Only shown when auto-login did NOT already load the hub.
+	if not hubLaunched then
 	local doneGate, launched = false, false
 
 	local gui = Instance.new("ScreenGui")
@@ -264,13 +265,29 @@ local function main()
 
 	repeat task.wait(0.1) until doneGate or not gui.Parent
 	pcall(function() gui:Destroy() end)
+	end   -- closes: if not hubLaunched
+
+	-- Safety net: if the hub DID load (auto-login or manual) but a stray gate GUI is
+	-- still around, remove it so we never leave the key box on top of the hub.
+	if hubLaunched then
+		pcall(function()
+			local holder = (gethui and gethui()) or game:GetService("CoreGui")
+			local g = holder and holder:FindFirstChild("NHKeyGate")
+			if g then g:Destroy() end
+		end)
+	end
 end
 
 --========================== ENTRY POINT ==========================--
--- Run main() under pcall so a partial failure never leaves the loader "stuck",
--- and always clear the re-entry guard afterward.
-local ok, err = pcall(main)
-if getgenv then getgenv().NH_LOADER_RUNNING = nil end
-if not ok then
-	warn("[NightHub] Loader error: " .. tostring(err))
+-- Re-entry guard (obfuscated loaders often get pasted/run twice) + run main() under
+-- pcall. Written as ONE plain if-block: no chunk-level `return` anywhere, so an
+-- obfuscator can wrap this whole file without tripping on a top-level return.
+local NH_G = (getgenv and getgenv()) or nil
+if not (NH_G and NH_G.NH_LOADER_RUNNING) then
+	if NH_G then NH_G.NH_LOADER_RUNNING = true end
+	local ok, err = pcall(main)
+	if NH_G then NH_G.NH_LOADER_RUNNING = nil end
+	if not ok then
+		warn("[NightHub] Loader error: " .. tostring(err))
+	end
 end
